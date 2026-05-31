@@ -356,58 +356,57 @@ async function downloadFile(fileName){
 }
 
 // ========== 上传逻辑（带文件类型检查）==========
-async function uploadFile(){
-
-    const file =
-    document.getElementById("fileInput").files[0];
-
+async function uploadFile() {
+    // 防爆：如果正在上传，直接拒绝
+    if(isUploading) {
+        alert("⏳ 正在上传中，请稍后再试");
+        return;
+    }
+    
+    const file = document.getElementById("fileInput").files[0];
     if(!file){
         alert("请选择文件");
         return;
     }
-
-    // 检查文件类型是否允许
+    
     if(!isAllowedFile(file.name)){
-        alert(`❌ 不支持的文件类型！\n\n允许上传的类型：\n.txt .md .html .css .js .json .xml .csv .log\n\n您上传的是：${file.name.substring(file.name.lastIndexOf('.'))}`);
+        alert("不支持的文件类型！");
         document.getElementById("fileInput").value = "";
         return;
     }
-
-    const content = await file.text();
-
-    const body={
-        files:{
-            [file.name]:{
-                content:content
-            }
+    
+    // 加锁
+    isUploading = true;
+    const uploadBtn = document.querySelector('#app .card .primary');
+    if(uploadBtn) {
+        uploadBtn.disabled = true;
+        uploadBtn.textContent = "⏳ 上传中...";
+    }
+    
+    try {
+        const content = await file.text();
+        const r = await fetch(`https://api.github.com/gists/${GIST_ID}`, {
+            method: "PATCH",
+            headers: { Authorization: `Bearer ${currentToken}`, "Content-Type": "application/json" },
+            body: JSON.stringify({ files: { [file.name]: { content } } })
+        });
+        
+        if(r.ok){
+            alert("✅ 上传成功，5秒后刷新");
+            document.getElementById("fileInput").value = "";
+            scheduleRefresh();
+        } else {
+            alert("❌ 上传失败");
         }
-    };
-
-    const r=await fetch(
-        `https://api.github.com/gists/${GIST_ID}`,
-        {
-            method:"PATCH",
-            headers:{
-                Authorization:`Bearer ${currentToken}`,
-                "Content-Type":"application/json"
-            },
-            body:JSON.stringify(body)
+    } catch(e) {
+        alert("上传异常: " + e.message);
+    } finally {
+        // 解锁
+        isUploading = false;
+        if(uploadBtn) {
+            uploadBtn.disabled = false;
+            uploadBtn.textContent = "上传文件";
         }
-    );
-
-    console.log("上传状态码:", r.status);
-
-    if(r.ok){
-        alert("✅ 上传成功，5秒后自动刷新列表...\n如果文件未出现，请点击「手动刷新」按钮");
-        document.getElementById("fileInput").value = "";
-        // 5秒后直接刷新列表
-        setTimeout(() => {
-            loadFiles();
-        }, 5000);
-    }else{
-        const txt=await r.text();
-        console.log("上传失败:", txt);
-        alert("上传失败: " + txt);
     }
 }
 
