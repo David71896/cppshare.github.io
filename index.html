@@ -63,6 +63,19 @@ footer a{
     color:#94a3b8;
     margin-left:12px;
 }
+.file-types-note{
+    font-size:12px;
+    color:#94a3b8;
+    margin-top:8px;
+    padding:8px 12px;
+    background:rgba(255,255,255,.05);
+    border-radius:10px;
+    display:inline-block;
+}
+.allowed-types{
+    color:#86efac;
+    font-weight:500;
+}
 </style>
 </head>
 <body>
@@ -86,8 +99,12 @@ footer a{
 <button class="danger" onclick="logout()">登出</button>
 </div>
 
-<input type="file" id="fileInput">
+<input type="file" id="fileInput" accept=".txt,.md,.html,.css,.js,.json,.xml,.csv,.log">
 <button class="primary" onclick="uploadFile()">上传文件</button>
+<div class="file-types-note">
+    📋 允许上传的类型：<span class="allowed-types">.txt .md .html .css .js .json .xml .csv .log</span>
+    <br>⚠️ 其他类型文件可能会上传失败或被拒绝
+</div>
 </div>
 
 <div class="card">
@@ -98,6 +115,9 @@ footer a{
 </div>
 <textarea id="customFileContent" placeholder="输入文件内容" style="height:100px;margin-bottom:10px;"></textarea>
 <button class="primary" onclick="uploadCustomFile()">上传</button>
+<div class="file-types-note" style="margin-top:8px;">
+    💡 自定义上传会自动添加 .txt 后缀，仅支持文本内容
+</div>
 </div>
 
 <div class="card">
@@ -140,6 +160,9 @@ const ADMIN_TOKEN_HASH = "7abce28c8b8efd9f600ac0787194424ea1edb066dec8c6266d3548
 // AES IV（16字节）
 const AES_IV = "1234567890123456"; 
 
+// 允许上传的文件扩展名
+const ALLOWED_EXTENSIONS = ['.txt', '.md', '.html', '.css', '.js', '.json', '.xml', '.csv', '.log'];
+
 let currentToken = "";
 let isAdmin = false;
 
@@ -155,6 +178,12 @@ window.addEventListener("load", function(){
         document.getElementById("password").value = "";
     }
 });
+
+// 检查文件扩展名是否允许
+function isAllowedFile(fileName){
+    const ext = fileName.substring(fileName.lastIndexOf('.')).toLowerCase();
+    return ALLOWED_EXTENSIONS.includes(ext);
+}
 
 async function sha256(text){
     const data = new TextEncoder().encode(text);
@@ -326,7 +355,7 @@ async function downloadFile(fileName){
     URL.revokeObjectURL(url);
 }
 
-// ========== 上传逻辑 ==========
+// ========== 上传逻辑（带文件类型检查）==========
 async function uploadFile(){
 
     const file =
@@ -334,6 +363,13 @@ async function uploadFile(){
 
     if(!file){
         alert("请选择文件");
+        return;
+    }
+
+    // 检查文件类型是否允许
+    if(!isAllowedFile(file.name)){
+        alert(`❌ 不支持的文件类型！\n\n允许上传的类型：\n.txt .md .html .css .js .json .xml .csv .log\n\n您上传的是：${file.name.substring(file.name.lastIndexOf('.'))}`);
+        document.getElementById("fileInput").value = "";
         return;
     }
 
@@ -362,7 +398,7 @@ async function uploadFile(){
     console.log("上传状态码:", r.status);
 
     if(r.ok){
-        alert("上传成功，5秒后自动刷新列表...\n如果文件未出现，请点击「手动刷新」按钮");
+        alert("✅ 上传成功，5秒后自动刷新列表...\n如果文件未出现，请点击「手动刷新」按钮");
         document.getElementById("fileInput").value = "";
         // 5秒后直接刷新列表
         setTimeout(() => {
@@ -414,7 +450,7 @@ async function uploadCustomFile(){
     console.log("上传状态码:", r.status);
 
     if(r.ok){
-        alert("上传成功，5秒后自动刷新列表...\n如果文件未出现，请点击「手动刷新」按钮");
+        alert("✅ 上传成功，5秒后自动刷新列表...\n如果文件未出现，请点击「手动刷新」按钮");
         document.getElementById("customFileName").value = "";
         document.getElementById("customFileContent").value = "";
         // 5秒后直接刷新列表
@@ -474,7 +510,7 @@ async function deleteFile(fileName){
     console.log("删除状态码:", r.status);
 
     if(r.ok){
-        alert("删除成功，5秒后自动刷新列表...\n如果文件仍在，请点击「手动刷新」按钮");
+        alert("✅ 删除成功，5秒后自动刷新列表...\n如果文件仍在，请点击「手动刷新」按钮");
         // 5秒后直接刷新列表
         setTimeout(() => {
             loadFiles();
@@ -486,8 +522,5 @@ async function deleteFile(fileName){
     }
 }
 </script>
-
-<script defer src="https://static.cloudflareinsights.com/beacon.min.js/v833ccba57c9e4d2798f2e76cebdd09a11778172276447" integrity="sha512-57MDmcccJXYtNnH+ZiBwzC4jb2rvgVCEokYN+L/nLlmO8rfYT/gIpW2A569iJ/3b+0UEasghjuZH/ma3wIs/EQ==" data-cf-beacon='{"version":"2024.11.0","token":"7939e04a4baf43c8b86a560f74aac60e","server_timing":{"name":{"cfCacheStatus":true,"cfEdge":true,"cfExtPri":true,"cfL4":true,"cfOrigin":true,"cfSpeedBrain":true},"location_startswith":null}}' crossorigin="anonymous"></script>
-<script defer src="https://static.cloudflareinsights.com/beacon.min.js/v833ccba57c9e4d2798f2e76cebdd09a11778172276447" integrity="sha512-57MDmcccJXYtNnH+ZiBwzC4jb2rvgVCEokYN+L/nLlmO8rfYT/gIpW2A569iJ/3b+0UEasghjuZH/ma3wIs/EQ==" data-cf-beacon='{"version":"2024.11.0","token":"39e87a2afe7c46788f2fe28e3346cf27","r":1,"server_timing":{"name":{"cfCacheStatus":true,"cfEdge":true,"cfExtPri":true,"cfL4":true,"cfOrigin":true,"cfSpeedBrain":true},"location_startswith":null}}' crossorigin="anonymous"></script>
 </body>
 </html>
