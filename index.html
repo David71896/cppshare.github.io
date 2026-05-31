@@ -1,0 +1,482 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Gist 文件中心</title>
+<script src="https://cdn.jsdelivr.net/npm/crypto-js@4.2.0/crypto-js.min.js"></script>
+<style>
+*{box-sizing:border-box}
+body{
+    margin:0;
+    padding:30px;
+    font-family:Arial,sans-serif;
+    background:linear-gradient(135deg,#0f172a,#1e293b,#111827);
+    color:#fff;
+}
+.container{max-width:1000px;margin:auto}
+.card{
+    background:rgba(255,255,255,.08);
+    backdrop-filter:blur(16px);
+    border:1px solid rgba(255,255,255,.12);
+    border-radius:18px;
+    padding:20px;
+    margin-bottom:16px;
+}
+input,textarea{
+    width:100%;
+    padding:12px;
+    border:none;
+    border-radius:12px;
+    margin:8px 0;
+    background:rgba(255,255,255,.08);
+    color:white;
+}
+button{
+    padding:10px 16px;
+    border:none;
+    border-radius:12px;
+    cursor:pointer;
+}
+.primary{background:#2563eb;color:white}
+.danger{background:#dc2626;color:white}
+.file{
+    display:flex;
+    justify-content:space-between;
+    align-items:center;
+    padding:10px 0;
+    border-bottom:1px solid rgba(255,255,255,.08);
+}
+.filename{cursor:pointer}
+#app{display:none}
+#viewer{height:300px}
+footer{
+    text-align:center;
+    margin-top:40px;
+}
+footer a{
+    color:#cbd5e1;
+    text-decoration:none;
+}
+</style>
+</head>
+<body>
+<div class="container">
+
+<div class="card">
+<h2>登录</h2>
+<input id="password" type="password" placeholder="输入密码">
+<button class="primary" onclick="login()">登录</button>
+<div id="msg"></div>
+</div>
+
+<div id="app">
+
+<div class="card">
+<div style="display:flex;justify-content:space-between;align-items:center;gap:10px;">
+<div style="display:flex;align-items:center;gap:10px;">
+<h3 id="role" style="margin:0"></h3>
+<button class="primary" style="background:#059669;padding:8px 12px;font-size:14px;" onclick="showPermissions()">权限信息</button>
+</div>
+<button class="danger" onclick="logout()">登出</button>
+</div>
+
+<input type="file" id="fileInput">
+<button class="primary" onclick="uploadFile()">上传文件</button>
+</div>
+
+<div class="card">
+<h3>自定义上传</h3>
+<div style="display:flex;gap:10px;margin-bottom:10px;">
+<input id="customFileName" type="text" placeholder="输入文件名" style="flex:1">
+<span style="align-self:center">.txt</span>
+</div>
+<textarea id="customFileContent" placeholder="输入文件内容" style="height:100px;margin-bottom:10px;"></textarea>
+<button class="primary" onclick="uploadCustomFile()">上传</button>
+</div>
+
+<div class="card">
+<h3>文件列表</h3>
+<div id="files"></div>
+</div>
+
+<div class="card">
+<h3>文件内容</h3>
+<textarea id="viewer" readonly></textarea>
+</div>
+
+</div>
+
+<footer>
+<a href="https://beian.miit.gov.cn/" target="_blank">
+粤 ICP 备 2025404694 号-1
+</a>
+</footer>
+
+</div>
+
+<script>
+const GIST_ID = "afbccc0822195aebb3bb21742579bf88";
+
+// AES-CBC-PKCS7 加密后的 Token
+const USER_TOKEN_AES = "fm2e4L/TKTRgXv169Vwpp9ZQehyhX+4c4nWSdA9SltMivjNap7XPY/4o+IprkYeK";
+const ADMIN_TOKEN_AES = "H52TGMxFu7ILPL4UMA/ISuPFZP4lTQlEA9p2pUM0Z/Gc2Me7VhL0if26XAj8Zb64";
+
+// SHA256(Token)
+const USER_TOKEN_HASH = "7abce28c8b8efd9f600ac0787194424ea1edb066dec8c6266d354845afb480c4";
+const ADMIN_TOKEN_HASH = "7abce28c8b8efd9f600ac0787194424ea1edb066dec8c6266d354845afb480c4";
+
+// AES IV（16字节）
+const AES_IV = "1234567890123456"; 
+
+let currentToken = "";
+let isAdmin = false;
+
+// 页面加载时自动恢复登录状态
+window.addEventListener("load", function(){
+    const savedToken = sessionStorage.getItem("currentToken");
+    const savedIsAdmin = sessionStorage.getItem("isAdmin");
+    
+    if(savedToken && savedIsAdmin !== null){
+        currentToken = savedToken;
+        isAdmin = savedIsAdmin === "true";
+        startApp();
+        document.getElementById("password").value = "";
+    }
+});
+
+async function sha256(text){
+    const data = new TextEncoder().encode(text);
+    const hashBuffer = await crypto.subtle.digest("SHA-256", data);
+    return Array.from(new Uint8Array(hashBuffer))
+    .map(b=>b.toString(16).padStart(2,"0"))
+    .join("");
+}
+
+function decryptToken(cipher,key){
+    const decrypted = CryptoJS.AES.decrypt(
+        cipher,
+        CryptoJS.enc.Utf8.parse(key),
+        {
+            iv: CryptoJS.enc.Utf8.parse(AES_IV),
+            mode: CryptoJS.mode.CBC,
+            padding: CryptoJS.pad.Pkcs7
+        }
+    );
+
+    return decrypted.toString(CryptoJS.enc.Utf8);
+}
+
+async function login(){
+
+    const password =
+    document.getElementById("password").value;
+
+    try{
+        const token =
+        decryptToken(USER_TOKEN_AES,password);
+
+        if(await sha256(token)===USER_TOKEN_HASH){
+            currentToken=token;
+            isAdmin=false;
+            sessionStorage.setItem("currentToken", token);
+            sessionStorage.setItem("isAdmin", "false");
+            startApp();
+            document.getElementById("msg").innerText="密码正确！尊敬的普通用户，欢迎您！";
+            return;
+        }
+    }catch(e){}
+
+    try{
+        const token =
+        decryptToken(ADMIN_TOKEN_AES,password);
+
+        if(await sha256(token)===ADMIN_TOKEN_HASH){
+            currentToken=token;
+            isAdmin=true;
+            sessionStorage.setItem("currentToken", token);
+            sessionStorage.setItem("isAdmin", "true");
+            startApp();
+            document.getElementById("msg").innerText="密码正确！尊敬的管理员，欢迎您！";
+            return;
+        }
+    }catch(e){}
+
+    document.getElementById("msg").innerText="密码错误";
+}
+
+function startApp(){
+    document.getElementById("app").style.display="block";
+    document.getElementById("role").innerText=
+        isAdmin?"管理员":"普通用户";
+    loadFiles();
+}
+
+function showPermissions(){
+    let permissionText = "【用户权限信息】\n\n";
+    permissionText += "身份: " + (isAdmin ? "管理员" : "普通用户") + "\n";
+    permissionText += "\n权限说明:\n";
+    
+    if(isAdmin){
+        permissionText += "✓ 上传文件\n";
+        permissionText += "✓ 下载文件\n";
+        permissionText += "✓ 删除文件\n";
+    } else {
+        permissionText += "✓ 上传文件\n";
+        permissionText += "✓ 下载文件\n";
+        permissionText += "✗ 删除文件(仅管理员)";
+    }
+    
+    alert(permissionText);
+}
+
+function logout(){
+    currentToken = "";
+    isAdmin = false;
+    sessionStorage.removeItem("currentToken");
+    sessionStorage.removeItem("isAdmin");
+    document.getElementById("app").style.display="none";
+    document.getElementById("password").value = "";
+    document.getElementById("msg").innerText="已登出";
+}
+
+async function loadFiles(){
+
+    const r=await fetch(
+        `https://api.github.com/gists/${GIST_ID}`
+    );
+
+    const gist=await r.json();
+
+    let html="";
+    
+    // 调试输出
+    const fileCount = Object.keys(gist.files).length;
+    console.log("当前文件数:", fileCount);
+    console.log("文件列表:", Object.keys(gist.files));
+
+    for(const fileName in gist.files){
+
+        html += `
+        <div class="file">
+            <span class="filename"
+                  onclick="readFile('${fileName}')">
+                  ${fileName}
+            </span>
+
+            <div style="display:flex;gap:8px;">
+                <button class="primary" style="background:#059669;"
+                        onclick="downloadFile('${fileName}')"
+                        title="下载文件">
+                        下载
+                </button>
+                ${isAdmin ?
+                `<button class="danger"
+                         onclick="deleteFile('${fileName}')">
+                         删除
+                 </button>` : ""}
+            </div>
+        </div>`;
+    }
+
+    document.getElementById("files").innerHTML=html;
+}
+
+async function readFile(fileName){
+
+    const r=await fetch(
+        `https://api.github.com/gists/${GIST_ID}`
+    );
+
+    const gist=await r.json();
+
+    document.getElementById("viewer").value =
+        gist.files[fileName].content || "";
+}
+
+async function downloadFile(fileName){
+    const r=await fetch(
+        `https://api.github.com/gists/${GIST_ID}`
+    );
+
+    const gist=await r.json();
+    const content = gist.files[fileName].content;
+
+    // 创建blob并下载
+    const blob = new Blob([content], {type: 'text/plain;charset=utf-8'});
+    const link = document.createElement('a');
+    const url = URL.createObjectURL(blob);
+    
+    link.href = url;
+    link.download = fileName;
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    URL.revokeObjectURL(url);
+}
+
+// ========== 上传逻辑 ==========
+async function uploadFile(){
+
+    const file =
+    document.getElementById("fileInput").files[0];
+
+    if(!file){
+        alert("请选择文件");
+        return;
+    }
+
+    const content = await file.text();
+
+    const body={
+        files:{
+            [file.name]:{
+                content:content
+            }
+        }
+    };
+
+    const r=await fetch(
+        `https://api.github.com/gists/${GIST_ID}`,
+        {
+            method:"PATCH",
+            headers:{
+                Authorization:`Bearer ${currentToken}`,
+                "Content-Type":"application/json"
+            },
+            body:JSON.stringify(body)
+        }
+    );
+
+    console.log("上传状态码:", r.status);
+
+    if(r.ok){
+        alert("上传成功，5秒后刷新列表...(如文件还在是正常的，因为GitHub有时更新不及时，可以重新试一下，如果报错就是已经删除)");
+        document.getElementById("fileInput").value = "";
+        // 5秒后直接刷新列表
+        setTimeout(() => {
+            loadFiles();
+        }, 5000);
+    }else{
+        const txt=await r.text();
+        console.log("上传失败:", txt);
+        alert("上传失败: " + txt);
+    }
+}
+
+async function uploadCustomFile(){
+    const fileName = document.getElementById("customFileName").value.trim();
+    const content = document.getElementById("customFileContent").value;
+
+    if(!fileName){
+        alert("请输入文件名");
+        return;
+    }
+
+    if(!content){
+        alert("请输入文件内容");
+        return;
+    }
+
+    const fullFileName = fileName + ".txt";
+
+    const body={
+        files:{
+            [fullFileName]:{
+                content:content
+            }
+        }
+    };
+
+    const r=await fetch(
+        `https://api.github.com/gists/${GIST_ID}`,
+        {
+            method:"PATCH",
+            headers:{
+                Authorization:`Bearer ${currentToken}`,
+                "Content-Type":"application/json"
+            },
+            body:JSON.stringify(body)
+        }
+    );
+
+    console.log("上传状态码:", r.status);
+
+    if(r.ok){
+        alert("上传成功，5秒后刷新列表...(如文件还在是正常的，因为GitHub有时更新不及时，可以重新试一下，如果报错就是已经删除)");
+        document.getElementById("customFileName").value = "";
+        document.getElementById("customFileContent").value = "";
+        // 5秒后直接刷新列表
+        setTimeout(() => {
+            loadFiles();
+        }, 5000);
+    }else{
+        const txt=await r.text();
+        console.log("上传失败:", txt);
+        alert("上传失败: " + txt);
+    }
+}
+
+// ========== 删除逻辑 ==========
+async function deleteFile(fileName){
+
+    if(!isAdmin) {
+        alert("无删除权限");
+        return;
+    }
+
+    console.log("准备删除:", fileName);
+
+    // 先获取当前gist的所有文件（检查是否是最后一个）
+    const getRes = await fetch(
+        `https://api.github.com/gists/${GIST_ID}`
+    );
+    const gist = await getRes.json();
+
+    // 检查是否是最后一个文件
+    if(Object.keys(gist.files).length === 1){
+        alert("Gist必须至少保留一个文件，无法删除最后一个文件");
+        return;
+    }
+
+    // 使用简洁删除方式：将文件设为 null
+    const body = {
+        files:{
+            [fileName]:null
+        }
+    };
+
+    console.log("删除请求体:", body);
+    
+    const r = await fetch(
+        `https://api.github.com/gists/${GIST_ID}`,
+        {
+            method: "PATCH",
+            headers: {
+                Authorization: `Bearer ${currentToken}`,
+                "Content-Type": "application/json"
+            },
+            body: JSON.stringify(body)
+        }
+    );
+
+    console.log("删除状态码:", r.status);
+
+    if(r.ok){
+        alert("删除成功，5秒后刷新列表...(如文件还在是正常的，因为GitHub有时更新不及时，可以重新试一下，如果报错就是已经删除)");
+        // 5秒后直接刷新列表
+        setTimeout(() => {
+            loadFiles();
+        }, 5000);
+    }else{
+        const txt = await r.text();
+        console.log("删除失败:", txt);
+        alert("删除失败: " + txt);
+    }
+}
+</script>
+
+<script defer src="https://static.cloudflareinsights.com/beacon.min.js/v833ccba57c9e4d2798f2e76cebdd09a11778172276447" integrity="sha512-57MDmcccJXYtNnH+ZiBwzC4jb2rvgVCEokYN+L/nLlmO8rfYT/gIpW2A569iJ/3b+0UEasghjuZH/ma3wIs/EQ==" data-cf-beacon='{"version":"2024.11.0","token":"7939e04a4baf43c8b86a560f74aac60e","server_timing":{"name":{"cfCacheStatus":true,"cfEdge":true,"cfExtPri":true,"cfL4":true,"cfOrigin":true,"cfSpeedBrain":true},"location_startswith":null}}' crossorigin="anonymous"></script>
+<script defer src="https://static.cloudflareinsights.com/beacon.min.js/v833ccba57c9e4d2798f2e76cebdd09a11778172276447" integrity="sha512-57MDmcccJXYtNnH+ZiBwzC4jb2rvgVCEokYN+L/nLlmO8rfYT/gIpW2A569iJ/3b+0UEasghjuZH/ma3wIs/EQ==" data-cf-beacon='{"version":"2024.11.0","token":"39e87a2afe7c46788f2fe28e3346cf27","r":1,"server_timing":{"name":{"cfCacheStatus":true,"cfEdge":true,"cfExtPri":true,"cfL4":true,"cfOrigin":true,"cfSpeedBrain":true},"location_startswith":null}}' crossorigin="anonymous"></script>
+</body>
+</html>
