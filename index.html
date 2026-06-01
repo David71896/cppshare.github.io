@@ -284,23 +284,48 @@ let isRefreshing = false;
 
 // 当前IP地址
 let currentIP = "";
+let currentIPType = "";
 
 // 上传限制配置（默认值）
 let limitConfig = {
     uploadBlocked: false,
-    applyToAdmin: false,   // 注意：即使设为false，管理员也会被计入次数统计（只是豁免限制检查）
+    applyToAdmin: false,
     cooldownSeconds: 30,
     windowHours: 12,
     maxUploadsPerWindow: 30
 };
 
-// 基于IP的上传记录结构: { "192.168.1.1": [{fileName, timestamp, userRole}, ...], ... }
+// 基于IP的上传记录
 let uploadLog = {};
 
+// ========== 带 Token 的 fetch 请求（新增，解决限流）==========
+async function fetchWithToken(url, options = {}) {
+    const headers = {
+        "Authorization": `Bearer ${currentToken}`,
+        "Accept": "application/vnd.github.v3+json",
+        ...options.headers
+    };
+    
+    const response = await fetch(url, {
+        ...options,
+        headers: headers
+    });
+    
+    if(response.status === 403) {
+        const remaining = response.headers.get('X-RateLimit-Remaining');
+        if(remaining === '0') {
+            const resetTime = response.headers.get('X-RateLimit-Reset');
+            if(resetTime) {
+                const resetDate = new Date(parseInt(resetTime) * 1000);
+                console.warn(`API限流！重置时间: ${resetDate.toLocaleTimeString()}`);
+            }
+        }
+    }
+    return response;
+}
+
 // ========== 获取当前IP地址 ==========
-// ========== 获取当前IP地址（优先IPv6，容错IPv4）==========
 async function getCurrentIP() {
-    // IP获取服务列表（优先IPv6，其次IPv4）
     const ipServices = [
         { name: 'ipv6', url: 'https://api6.ipify.org?format=json', type: 'ipv6' },
         { name: 'ipv6-backup', url: 'https://ipv6.ipapi.co/json/', type: 'ipv6' },
@@ -309,26 +334,15 @@ async function getCurrentIP() {
         { name: 'ipv4-backup2', url: 'https://api.my-ip.io/ip.json', type: 'ipv4' }
     ];
     
-    let lastError = null;
-    
     for (const service of ipServices) {
         try {
             const controller = new AbortController();
             const timeoutId = setTimeout(() => controller.abort(), 3000);
-            
             const response = await fetch(service.url, { signal: controller.signal });
             clearTimeout(timeoutId);
-            
             if (!response.ok) throw new Error(`HTTP ${response.status}`);
-            
             const data = await response.json();
-            let ip = null;
-            
-            // 不同API返回格式不同
-            if (data.ip) ip = data.ip;
-            else if (data.ipv6) ip = data.ipv6;
-            else if (data.ipv4) ip = data.ipv4;
-            
+            let ip = data.ip || data.ipv6 || data.ipv4;
             if (ip && isValidIP(ip)) {
                 currentIP = ip;
                 currentIPType = service.type;
@@ -338,35 +352,25 @@ async function getCurrentIP() {
                 return currentIP;
             }
         } catch(e) {
-            console.log(`⚠️ ${service.name} (${service.type}) 获取失败:`, e.message);
-            lastError = e;
             continue;
         }
     }
-    
-    // 所有服务都失败，使用降级方案
-    console.error("❌ 所有IP服务都失败:", lastError);
     currentIP = getFallbackIP();
     currentIPType = 'fallback';
     document.getElementById("ipInfo").innerHTML = `⚠️ 无法获取IP，使用本地标识: ${currentIP}<br><small>（上传限制仍会生效，但可能无法跨设备同步）</small>`;
     return currentIP;
 }
 
-// 验证IP格式
 function isValidIP(ip) {
     if (!ip || typeof ip !== 'string') return false;
-    // IPv4 正则
     const ipv4Regex = /^(25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\.(25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\.(25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\.(25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)$/;
-    // IPv6 正则（简化版）
     const ipv6Regex = /^([0-9a-fA-F]{1,4}:){7}[0-9a-fA-F]{1,4}$|^(([0-9a-fA-F]{1,4}:){0,6}[0-9a-fA-F]{1,4})?::([0-9a-fA-F]{1,4}:){0,6}[0-9a-fA-F]{1,4}$/;
     return ipv4Regex.test(ip) || ipv6Regex.test(ip);
 }
 
-// 获取降级IP（基于localStorage + 随机标识）
 function getFallbackIP() {
     let fallbackIP = localStorage.getItem("fallbackIP");
     if (!fallbackIP) {
-        // 生成一个持久的随机标识（基于 localStorage，清除缓存后会重置）
         const randomId = Math.random().toString(36).substring(2, 15) + Math.random().toString(36).substring(2, 15);
         fallbackIP = `fallback_${randomId}`;
         localStorage.setItem("fallbackIP", fallbackIP);
@@ -374,12 +378,10 @@ function getFallbackIP() {
     return fallbackIP;
 }
 
-// ========== 检查是否是系统文件 ==========
 function isSystemFile(fileName) {
     return SYSTEM_FILES.includes(fileName);
 }
 
-// ========== 检查并阻止系统文件操作 ==========
 function checkSystemFile(fileName, operation) {
     if(isSystemFile(fileName)) {
         alert(`🔒 系统提示：你本次操作已被阻止，原因：不可${operation}系统文件\n\n文件名：${fileName}`);
@@ -388,10 +390,10 @@ function checkSystemFile(fileName, operation) {
     return true;
 }
 
-// ========== 从 Gist 加载配置 ==========
+// ========== 从 Gist 加载配置（使用 Token）==========
 async function loadLimitConfig() {
     try {
-        const r = await fetch(`https://api.github.com/gists/${GIST_ID}?_=${Date.now()}`);
+        const r = await fetchWithToken(`https://api.github.com/gists/${GIST_ID}?_=${Date.now()}`);
         const gist = await r.json();
         
         if(gist.files[CONFIG_FILE_NAME]) {
@@ -402,7 +404,6 @@ async function loadLimitConfig() {
         
         if(gist.files[UPLOAD_LOG_FILE_NAME]) {
             uploadLog = JSON.parse(gist.files[UPLOAD_LOG_FILE_NAME].content);
-            // 清理超过30天的旧记录
             const thirtyDaysAgo = Date.now() - 30 * 24 * 3600 * 1000;
             for(const ip in uploadLog) {
                 uploadLog[ip] = uploadLog[ip].filter(log => log.timestamp > thirtyDaysAgo);
@@ -427,7 +428,7 @@ async function loadLimitConfig() {
     }
 }
 
-// ========== 保存配置到 Gist ==========
+// ========== 保存配置到 Gist（使用 Token）==========
 async function saveLimitConfig() {
     if(!isAdmin) {
         alert("只有管理员可以修改配置");
@@ -445,7 +446,7 @@ async function saveLimitConfig() {
     };
     
     try {
-        const getRes = await fetch(`https://api.github.com/gists/${GIST_ID}`);
+        const getRes = await fetchWithToken(`https://api.github.com/gists/${GIST_ID}`);
         const gist = await getRes.json();
         
         const files = {};
@@ -456,9 +457,9 @@ async function saveLimitConfig() {
         }
         files[CONFIG_FILE_NAME] = { content: JSON.stringify(newConfig, null, 2) };
         
-        const r = await fetch(`https://api.github.com/gists/${GIST_ID}`, {
+        const r = await fetchWithToken(`https://api.github.com/gists/${GIST_ID}`, {
             method: "PATCH",
-            headers: { Authorization: `Bearer ${currentToken}`, "Content-Type": "application/json" },
+            headers: { "Content-Type": "application/json" },
             body: JSON.stringify({ files: files })
         });
         
@@ -478,7 +479,7 @@ async function saveLimitConfig() {
     }
 }
 
-// ========== 记录上传（基于IP，记录角色）==========
+// ========== 记录上传 ==========
 async function logUpload(fileName) {
     if(!currentIP) await getCurrentIP();
     
@@ -486,7 +487,7 @@ async function logUpload(fileName) {
         fileName: fileName,
         timestamp: Date.now(),
         date: new Date().toISOString(),
-        role: isAdmin ? "admin" : "user"  // 记录上传者的角色
+        role: isAdmin ? "admin" : "user"
     };
     
     if(!uploadLog[currentIP]) {
@@ -494,12 +495,11 @@ async function logUpload(fileName) {
     }
     uploadLog[currentIP].push(logEntry);
     
-    // 清理超过30天的旧记录
     const thirtyDaysAgo = Date.now() - 30 * 24 * 3600 * 1000;
     uploadLog[currentIP] = uploadLog[currentIP].filter(log => log.timestamp > thirtyDaysAgo);
     
     try {
-        const getRes = await fetch(`https://api.github.com/gists/${GIST_ID}`);
+        const getRes = await fetchWithToken(`https://api.github.com/gists/${GIST_ID}`);
         const gist = await getRes.json();
         
         const files = {};
@@ -510,9 +510,9 @@ async function logUpload(fileName) {
         }
         files[UPLOAD_LOG_FILE_NAME] = { content: JSON.stringify(uploadLog, null, 2) };
         
-        await fetch(`https://api.github.com/gists/${GIST_ID}`, {
+        await fetchWithToken(`https://api.github.com/gists/${GIST_ID}`, {
             method: "PATCH",
-            headers: { Authorization: `Bearer ${currentToken}`, "Content-Type": "application/json" },
+            headers: { "Content-Type": "application/json" },
             body: JSON.stringify({ files: files })
         });
         console.log("✅ IP上传记录已保存");
@@ -521,31 +521,25 @@ async function logUpload(fileName) {
     }
 }
 
-// ========== 获取当前IP的上传记录 ==========
 function getCurrentIPLog() {
     if(!currentIP) return [];
     return uploadLog[currentIP] || [];
 }
 
-// ========== 检查是否允许上传（基于IP，管理员和普通用户共享次数统计）==========
 function canUpload() {
-    // 1. 禁止上传开关检查
     if(limitConfig.uploadBlocked) {
         if(limitConfig.applyToAdmin || !isAdmin) {
             return { allowed: false, reason: "🚫 管理员已禁止上传，请稍后再试" };
         }
     }
     
-    // 2. 如果是管理员且设置了对管理员不生效，则直接放行（不检查次数限制）
     if(isAdmin && !limitConfig.applyToAdmin) {
         return { allowed: true, reason: "" };
     }
     
-    // 3. 次数限制检查（管理员和普通用户都会在这里被检查，共享同一个IP的上传记录）
     const now = Date.now();
-    const ipLog = getCurrentIPLog();  // 这个IP的所有上传记录（包括管理员和普通用户）
+    const ipLog = getCurrentIPLog();
     
-    // 检查冷却时间（基于该IP的所有上传记录）
     if(ipLog.length > 0) {
         const lastUpload = ipLog[ipLog.length - 1];
         const secondsSinceLast = (now - lastUpload.timestamp) / 1000;
@@ -555,7 +549,6 @@ function canUpload() {
         }
     }
     
-    // 检查时间窗口内上传次数（基于该IP的所有上传记录）
     const windowMs = limitConfig.windowHours * 3600 * 1000;
     const windowStart = now - windowMs;
     const uploadsInWindow = ipLog.filter(log => log.timestamp > windowStart).length;
@@ -567,15 +560,12 @@ function canUpload() {
     return { allowed: true, reason: "" };
 }
 
-// ========== 更新上传限制显示 ==========
 function updateUploadLimitDisplay() {
     const infoDiv = document.getElementById("uploadLimitInfo");
     const status = canUpload();
     const windowMs = limitConfig.windowHours * 3600 * 1000;
     const ipLog = getCurrentIPLog();
     const uploadsInWindow = ipLog.filter(log => log.timestamp > Date.now() - windowMs).length;
-    
-    // 统计窗口内管理员和普通用户分别上传了多少次
     const adminUploads = ipLog.filter(log => log.timestamp > Date.now() - windowMs && log.role === "admin").length;
     const userUploads = ipLog.filter(log => log.timestamp > Date.now() - windowMs && log.role === "user").length;
     
@@ -597,7 +587,6 @@ function updateUploadLimitDisplay() {
         }
     }
     
-    // 显示管理员豁免状态
     if(isAdmin && !limitConfig.applyToAdmin && !limitConfig.uploadBlocked) {
         html += `<div style="color:#86efac;margin-top:8px;">✨ 管理员已豁免次数限制，可随时上传</div>`;
     } else if(isAdmin && limitConfig.applyToAdmin) {
@@ -630,7 +619,6 @@ window.addEventListener("load", function(){
     }
 });
 
-// 检查文件扩展名是否允许
 function isAllowedFile(fileName){
     const ext = fileName.substring(fileName.lastIndexOf('.')).toLowerCase();
     return ALLOWED_EXTENSIONS.includes(ext);
@@ -639,22 +627,15 @@ function isAllowedFile(fileName){
 async function sha256(text){
     const data = new TextEncoder().encode(text);
     const hashBuffer = await crypto.subtle.digest("SHA-256", data);
-    return Array.from(new Uint8Array(hashBuffer))
-    .map(b=>b.toString(16).padStart(2,"0"))
-    .join("");
+    return Array.from(new Uint8Array(hashBuffer)).map(b=>b.toString(16).padStart(2,"0")).join("");
 }
 
 function decryptToken(cipher,key){
-    const decrypted = CryptoJS.AES.decrypt(
-        cipher,
-        CryptoJS.enc.Utf8.parse(key),
-        {
-            iv: CryptoJS.enc.Utf8.parse(AES_IV),
-            mode: CryptoJS.mode.CBC,
-            padding: CryptoJS.pad.Pkcs7
-        }
-    );
-
+    const decrypted = CryptoJS.AES.decrypt(cipher, CryptoJS.enc.Utf8.parse(key), {
+        iv: CryptoJS.enc.Utf8.parse(AES_IV),
+        mode: CryptoJS.mode.CBC,
+        padding: CryptoJS.pad.Pkcs7
+    });
     return decrypted.toString(CryptoJS.enc.Utf8);
 }
 
@@ -691,8 +672,8 @@ async function login(){
 }
 
 async function startApp(){
-    await getCurrentIP();      // 先获取IP
-    await loadLimitConfig();   // 加载配置
+    await getCurrentIP();
+    await loadLimitConfig();
     document.getElementById("app").style.display="block";
     document.getElementById("role").innerText = isAdmin ? "管理员" : "普通用户";
     
@@ -701,7 +682,7 @@ async function startApp(){
     }
     
     loadFiles();
-    setInterval(updateUploadLimitDisplay,100);
+    setInterval(updateUploadLimitDisplay, 100);
 }
 
 function showPermissions(){
@@ -752,12 +733,13 @@ function scheduleRefresh(){
     }, 100);
 }
 
+// ========== loadFiles 使用 Token 认证 ==========
 async function loadFiles(){
     if(isRefreshing) return;
     isRefreshing = true;
     
     try {
-        const r = await fetch(`https://api.github.com/gists/${GIST_ID}?_=${Date.now()}`);
+        const r = await fetchWithToken(`https://api.github.com/gists/${GIST_ID}?_=${Date.now()}`);
         const gist = await r.json();
 
         let html = "";
@@ -813,7 +795,7 @@ async function readFile(fileName){
     }
     
     try {
-        const r = await fetch(`https://api.github.com/gists/${GIST_ID}?_=${Date.now()}`);
+        const r = await fetchWithToken(`https://api.github.com/gists/${GIST_ID}?_=${Date.now()}`);
         const gist = await r.json();
         document.getElementById("viewer").value = gist.files[fileName]?.content || "";
     } catch(e) {
@@ -828,7 +810,7 @@ async function downloadFile(fileName){
     }
     
     try {
-        const r = await fetch(`https://api.github.com/gists/${GIST_ID}`);
+        const r = await fetchWithToken(`https://api.github.com/gists/${GIST_ID}`);
         const gist = await r.json();
         const content = gist.files[fileName]?.content;
         if(!content) { alert("文件内容为空"); return; }
@@ -874,9 +856,9 @@ async function uploadFile() {
     
     try {
         const content = await file.text();
-        const r = await fetch(`https://api.github.com/gists/${GIST_ID}`, {
+        const r = await fetchWithToken(`https://api.github.com/gists/${GIST_ID}`, {
             method: "PATCH",
-            headers: { Authorization: `Bearer ${currentToken}`, "Content-Type": "application/json" },
+            headers: { "Content-Type": "application/json" },
             body: JSON.stringify({ files: { [file.name]: { content } } })
         });
         
@@ -921,9 +903,9 @@ async function uploadCustomFile(){
     uploadBtn.textContent = "⏳ 上传中...";
 
     try {
-        const r = await fetch(`https://api.github.com/gists/${GIST_ID}`, {
+        const r = await fetchWithToken(`https://api.github.com/gists/${GIST_ID}`, {
             method: "PATCH",
-            headers: { Authorization: `Bearer ${currentToken}`, "Content-Type": "application/json" },
+            headers: { "Content-Type": "application/json" },
             body: JSON.stringify({ files: { [fullFileName]: { content } } })
         });
 
@@ -957,7 +939,7 @@ async function deleteFile(fileName){
     if(isDeleting) { alert("正在删除中"); return; }
 
     try {
-        const getRes = await fetch(`https://api.github.com/gists/${GIST_ID}`);
+        const getRes = await fetchWithToken(`https://api.github.com/gists/${GIST_ID}`);
         const gist = await getRes.json();
         const visibleFiles = Object.keys(gist.files).filter(f => !isSystemFile(f));
         if(visibleFiles.length === 1 && visibleFiles[0] === fileName){
@@ -969,9 +951,9 @@ async function deleteFile(fileName){
 
         isDeleting = true;
         const body = { files: { [fileName]: null } };
-        const r = await fetch(`https://api.github.com/gists/${GIST_ID}`, {
+        const r = await fetchWithToken(`https://api.github.com/gists/${GIST_ID}`, {
             method: "PATCH",
-            headers: { Authorization: `Bearer ${currentToken}`, "Content-Type": "application/json" },
+            headers: { "Content-Type": "application/json" },
             body: JSON.stringify(body)
         });
 
