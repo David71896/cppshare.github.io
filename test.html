@@ -314,7 +314,7 @@ async function getCurrentIP() {
     for (const service of ipServices) {
         try {
             const controller = new AbortController();
-            const timeoutId = setTimeout(() => controller.abort(), 100);
+            const timeoutId = setTimeout(() => controller.abort(), 3000);
             
             const response = await fetch(service.url, { signal: controller.signal });
             clearTimeout(timeoutId);
