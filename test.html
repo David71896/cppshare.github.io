@@ -3,9 +3,10 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Gist 文件中心 - IP限制版</title>
+<title>Gist 文件中心 - Token认证版</title>
 <script src="https://cdn.jsdelivr.net/npm/crypto-js@4.2.0/crypto-js.min.js"></script>
 <style>
+/* 样式保持不变，省略... 请使用您原有的样式 */
 *{box-sizing:border-box}
 body{
     margin:0;
@@ -284,114 +285,97 @@ let isRefreshing = false;
 
 // 当前IP地址
 let currentIP = "";
+let currentIPType = "";
 
 // 上传限制配置（默认值）
 let limitConfig = {
     uploadBlocked: false,
-    applyToAdmin: false,   // 注意：即使设为false，管理员也会被计入次数统计（只是豁免限制检查）
+    applyToAdmin: false,
     cooldownSeconds: 30,
     windowHours: 12,
     maxUploadsPerWindow: 30
 };
 
-// 基于IP的上传记录结构: { "192.168.1.1": [{fileName, timestamp, userRole}, ...], ... }
+// 基于IP的上传记录
 let uploadLog = {};
 
+// ========== 带 Token 的 fetch 请求 ==========
+async function fetchWithToken(url, options = {}) {
+    const headers = {
+        "Authorization": `Bearer ${currentToken}`,
+        "Accept": "application/vnd.github.v3+json",
+        ...options.headers
+    };
+    
+    const response = await fetch(url, {
+        ...options,
+        headers: headers
+    });
+    
+    // 检查限流
+    if(response.status === 403) {
+        const remaining = response.headers.get('X-RateLimit-Remaining');
+        if(remaining === '0') {
+            const resetTime = response.headers.get('X-RateLimit-Reset');
+            if(resetTime) {
+                const resetDate = new Date(parseInt(resetTime) * 1000);
+                console.warn(`⚠️ API限流！重置时间: ${resetDate.toLocaleTimeString()}`);
+                alert(`⚠️ API限流！请等待至 ${resetDate.toLocaleTimeString()}`);
+            }
+        }
+    }
+    return response;
+}
+
 // ========== 获取当前IP地址 ==========
-// ========== 获取当前IP地址（优先IPv6，容错IPv4）==========
 async function getCurrentIP() {
-    // IP获取服务列表（优先IPv6，其次IPv4）
     const ipServices = [
         { name: 'ipv6', url: 'https://api6.ipify.org?format=json', type: 'ipv6' },
-        { name: 'ipv6-backup', url: 'https://ipv6.ipapi.co/json/', type: 'ipv6' },
         { name: 'ipv4', url: 'https://api.ipify.org?format=json', type: 'ipv4' },
-        { name: 'ipv4-backup', url: 'https://ipapi.co/json/', type: 'ipv4' },
-        { name: 'ipv4-backup2', url: 'https://api.my-ip.io/ip.json', type: 'ipv4' }
+        { name: 'ipv4-backup', url: 'https://ipapi.co/json/', type: 'ipv4' }
     ];
-    
-    let lastError = null;
     
     for (const service of ipServices) {
         try {
             const controller = new AbortController();
             const timeoutId = setTimeout(() => controller.abort(), 3000);
-            
             const response = await fetch(service.url, { signal: controller.signal });
             clearTimeout(timeoutId);
-            
             if (!response.ok) throw new Error(`HTTP ${response.status}`);
-            
             const data = await response.json();
-            let ip = null;
-            
-            // 不同API返回格式不同
-            if (data.ip) ip = data.ip;
-            else if (data.ipv6) ip = data.ipv6;
-            else if (data.ipv4) ip = data.ipv4;
-            
-            if (ip && isValidIP(ip)) {
+            let ip = data.ip || data.ipv6 || data.ipv4;
+            if (ip) {
                 currentIP = ip;
                 currentIPType = service.type;
                 const ipDisplay = currentIPType === 'ipv6' ? `IPv6: ${ip.substring(0, 20)}...` : `IPv4: ${ip}`;
-                document.getElementById("ipInfo").innerHTML = `🌐 当前${ipDisplay}（管理员和普通用户共享此IP的上传次数）`;
-                console.log(`✅ 获取到${service.type}:`, ip);
+                document.getElementById("ipInfo").innerHTML = `🌐 当前${ipDisplay}`;
                 return currentIP;
             }
         } catch(e) {
-            console.log(`⚠️ ${service.name} (${service.type}) 获取失败:`, e.message);
-            lastError = e;
             continue;
         }
     }
-    
-    // 所有服务都失败，使用降级方案
-    console.error("❌ 所有IP服务都失败:", lastError);
-    currentIP = getFallbackIP();
-    currentIPType = 'fallback';
-    document.getElementById("ipInfo").innerHTML = `⚠️ 无法获取IP，使用本地标识: ${currentIP}<br><small>（上传限制仍会生效，但可能无法跨设备同步）</small>`;
+    currentIP = "unknown";
+    document.getElementById("ipInfo").innerHTML = `⚠️ 无法获取IP`;
     return currentIP;
 }
 
-// 验证IP格式
-function isValidIP(ip) {
-    if (!ip || typeof ip !== 'string') return false;
-    // IPv4 正则
-    const ipv4Regex = /^(25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\.(25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\.(25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\.(25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)$/;
-    // IPv6 正则（简化版）
-    const ipv6Regex = /^([0-9a-fA-F]{1,4}:){7}[0-9a-fA-F]{1,4}$|^(([0-9a-fA-F]{1,4}:){0,6}[0-9a-fA-F]{1,4})?::([0-9a-fA-F]{1,4}:){0,6}[0-9a-fA-F]{1,4}$/;
-    return ipv4Regex.test(ip) || ipv6Regex.test(ip);
-}
-
-// 获取降级IP（基于localStorage + 随机标识）
-function getFallbackIP() {
-    let fallbackIP = localStorage.getItem("fallbackIP");
-    if (!fallbackIP) {
-        // 生成一个持久的随机标识（基于 localStorage，清除缓存后会重置）
-        const randomId = Math.random().toString(36).substring(2, 15) + Math.random().toString(36).substring(2, 15);
-        fallbackIP = `fallback_${randomId}`;
-        localStorage.setItem("fallbackIP", fallbackIP);
-    }
-    return fallbackIP;
-}
-
-// ========== 检查是否是系统文件 ==========
 function isSystemFile(fileName) {
     return SYSTEM_FILES.includes(fileName);
 }
 
-// ========== 检查并阻止系统文件操作 ==========
 function checkSystemFile(fileName, operation) {
     if(isSystemFile(fileName)) {
-        alert(`🔒 系统提示：你本次操作已被阻止，原因：不可${operation}系统文件\n\n文件名：${fileName}`);
+        alert(`🔒 系统提示：不可${operation}系统文件\n\n文件名：${fileName}`);
         return false;
     }
     return true;
 }
 
-// ========== 从 Gist 加载配置 ==========
+// ========== 从 Gist 加载配置（使用 Token）==========
 async function loadLimitConfig() {
     try {
-        const r = await fetch(`https://api.github.com/gists/${GIST_ID}?_=${Date.now()}`);
+        const r = await fetchWithToken(`https://api.github.com/gists/${GIST_ID}?_=${Date.now()}`);
         const gist = await r.json();
         
         if(gist.files[CONFIG_FILE_NAME]) {
@@ -402,7 +386,6 @@ async function loadLimitConfig() {
         
         if(gist.files[UPLOAD_LOG_FILE_NAME]) {
             uploadLog = JSON.parse(gist.files[UPLOAD_LOG_FILE_NAME].content);
-            // 清理超过30天的旧记录
             const thirtyDaysAgo = Date.now() - 30 * 24 * 3600 * 1000;
             for(const ip in uploadLog) {
                 uploadLog[ip] = uploadLog[ip].filter(log => log.timestamp > thirtyDaysAgo);
@@ -427,7 +410,7 @@ async function loadLimitConfig() {
     }
 }
 
-// ========== 保存配置到 Gist ==========
+// ========== 保存配置到 Gist（使用 Token）==========
 async function saveLimitConfig() {
     if(!isAdmin) {
         alert("只有管理员可以修改配置");
@@ -445,7 +428,7 @@ async function saveLimitConfig() {
     };
     
     try {
-        const getRes = await fetch(`https://api.github.com/gists/${GIST_ID}`);
+        const getRes = await fetchWithToken(`https://api.github.com/gists/${GIST_ID}`);
         const gist = await getRes.json();
         
         const files = {};
@@ -456,9 +439,9 @@ async function saveLimitConfig() {
         }
         files[CONFIG_FILE_NAME] = { content: JSON.stringify(newConfig, null, 2) };
         
-        const r = await fetch(`https://api.github.com/gists/${GIST_ID}`, {
+        const r = await fetchWithToken(`https://api.github.com/gists/${GIST_ID}`, {
             method: "PATCH",
-            headers: { Authorization: `Bearer ${currentToken}`, "Content-Type": "application/json" },
+            headers: { "Content-Type": "application/json" },
             body: JSON.stringify({ files: files })
         });
         
@@ -478,7 +461,7 @@ async function saveLimitConfig() {
     }
 }
 
-// ========== 记录上传（基于IP，记录角色）==========
+// ========== 记录上传 ==========
 async function logUpload(fileName) {
     if(!currentIP) await getCurrentIP();
     
@@ -486,7 +469,7 @@ async function logUpload(fileName) {
         fileName: fileName,
         timestamp: Date.now(),
         date: new Date().toISOString(),
-        role: isAdmin ? "admin" : "user"  // 记录上传者的角色
+        role: isAdmin ? "admin" : "user"
     };
     
     if(!uploadLog[currentIP]) {
@@ -494,12 +477,11 @@ async function logUpload(fileName) {
     }
     uploadLog[currentIP].push(logEntry);
     
-    // 清理超过30天的旧记录
     const thirtyDaysAgo = Date.now() - 30 * 24 * 3600 * 1000;
     uploadLog[currentIP] = uploadLog[currentIP].filter(log => log.timestamp > thirtyDaysAgo);
     
     try {
-        const getRes = await fetch(`https://api.github.com/gists/${GIST_ID}`);
+        const getRes = await fetchWithToken(`https://api.github.com/gists/${GIST_ID}`);
         const gist = await getRes.json();
         
         const files = {};
@@ -510,99 +492,72 @@ async function logUpload(fileName) {
         }
         files[UPLOAD_LOG_FILE_NAME] = { content: JSON.stringify(uploadLog, null, 2) };
         
-        await fetch(`https://api.github.com/gists/${GIST_ID}`, {
+        await fetchWithToken(`https://api.github.com/gists/${GIST_ID}`, {
             method: "PATCH",
-            headers: { Authorization: `Bearer ${currentToken}`, "Content-Type": "application/json" },
+            headers: { "Content-Type": "application/json" },
             body: JSON.stringify({ files: files })
         });
-        console.log("✅ IP上传记录已保存");
+        console.log("✅ 上传记录已保存");
     } catch(e) {
         console.error("保存上传记录失败:", e);
     }
 }
 
-// ========== 获取当前IP的上传记录 ==========
 function getCurrentIPLog() {
     if(!currentIP) return [];
     return uploadLog[currentIP] || [];
 }
 
-// ========== 检查是否允许上传（基于IP，管理员和普通用户共享次数统计）==========
 function canUpload() {
-    // 1. 禁止上传开关检查
     if(limitConfig.uploadBlocked) {
         if(limitConfig.applyToAdmin || !isAdmin) {
-            return { allowed: false, reason: "🚫 管理员已禁止上传，请稍后再试" };
+            return { allowed: false, reason: "🚫 管理员已禁止上传" };
         }
     }
     
-    // 2. 如果是管理员且设置了对管理员不生效，则直接放行（不检查次数限制）
     if(isAdmin && !limitConfig.applyToAdmin) {
         return { allowed: true, reason: "" };
     }
     
-    // 3. 次数限制检查（管理员和普通用户都会在这里被检查，共享同一个IP的上传记录）
     const now = Date.now();
-    const ipLog = getCurrentIPLog();  // 这个IP的所有上传记录（包括管理员和普通用户）
+    const ipLog = getCurrentIPLog();
     
-    // 检查冷却时间（基于该IP的所有上传记录）
     if(ipLog.length > 0) {
         const lastUpload = ipLog[ipLog.length - 1];
         const secondsSinceLast = (now - lastUpload.timestamp) / 1000;
         if(secondsSinceLast < limitConfig.cooldownSeconds) {
             const waitSeconds = Math.ceil(limitConfig.cooldownSeconds - secondsSinceLast);
-            return { allowed: false, reason: `⏱️ 请等待 ${waitSeconds} 秒后再上传` };
+            return { allowed: false, reason: `⏱️ 请等待 ${waitSeconds} 秒` };
         }
     }
     
-    // 检查时间窗口内上传次数（基于该IP的所有上传记录）
     const windowMs = limitConfig.windowHours * 3600 * 1000;
     const windowStart = now - windowMs;
     const uploadsInWindow = ipLog.filter(log => log.timestamp > windowStart).length;
     
     if(uploadsInWindow >= limitConfig.maxUploadsPerWindow) {
-        return { allowed: false, reason: `📊 ${limitConfig.windowHours}小时内本IP共上传 ${uploadsInWindow}/${limitConfig.maxUploadsPerWindow} 次（管理员+用户合计），请稍后再试` };
+        return { allowed: false, reason: `📊 ${limitConfig.windowHours}小时内已达 ${uploadsInWindow}/${limitConfig.maxUploadsPerWindow} 次` };
     }
     
     return { allowed: true, reason: "" };
 }
 
-// ========== 更新上传限制显示 ==========
 function updateUploadLimitDisplay() {
     const infoDiv = document.getElementById("uploadLimitInfo");
     const status = canUpload();
     const windowMs = limitConfig.windowHours * 3600 * 1000;
     const ipLog = getCurrentIPLog();
     const uploadsInWindow = ipLog.filter(log => log.timestamp > Date.now() - windowMs).length;
-    
-    // 统计窗口内管理员和普通用户分别上传了多少次
     const adminUploads = ipLog.filter(log => log.timestamp > Date.now() - windowMs && log.role === "admin").length;
     const userUploads = ipLog.filter(log => log.timestamp > Date.now() - windowMs && log.role === "user").length;
     
     let html = `
         <div style="display:flex;justify-content:space-between;flex-wrap:wrap;gap:8px;">
-            <span>📊 ${limitConfig.windowHours}小时内本IP共上传: <strong style="color:#eab308">${uploadsInWindow}</strong> / ${limitConfig.maxUploadsPerWindow} 次</span>
-            <span>⏱️ 上传间隔: ${limitConfig.cooldownSeconds} 秒</span>
+            <span>📊 ${limitConfig.windowHours}小时内共上传: <strong>${uploadsInWindow}</strong> / ${limitConfig.maxUploadsPerWindow} 次</span>
+            <span>⏱️ 间隔: ${limitConfig.cooldownSeconds}秒</span>
         </div>
-        <div style="font-size:12px;margin-top:5px;color:#94a3b8;">
-            （其中管理员: ${adminUploads}次，普通用户: ${userUploads}次）
-        </div>
+        <div style="font-size:12px;">（管理员:${adminUploads} 用户:${userUploads}）</div>
     `;
-    
-    if(limitConfig.uploadBlocked) {
-        if(limitConfig.applyToAdmin || !isAdmin) {
-            html += `<div style="color:#f87171;margin-top:8px;">🚫 系统当前处于【禁止上传】状态</div>`;
-        } else if(isAdmin && !limitConfig.applyToAdmin) {
-            html += `<div style="color:#86efac;margin-top:8px;">🔓 管理员不受上传限制（当前可上传）</div>`;
-        }
-    }
-    
-    // 显示管理员豁免状态
-    if(isAdmin && !limitConfig.applyToAdmin && !limitConfig.uploadBlocked) {
-        html += `<div style="color:#86efac;margin-top:8px;">✨ 管理员已豁免次数限制，可随时上传</div>`;
-    } else if(isAdmin && limitConfig.applyToAdmin) {
-        html += `<div style="color:#eab308;margin-top:8px;">⚠️ 管理员也受到次数限制（与普通用户共享统计）</div>`;
-    }
     
     if(!status.allowed && !(isAdmin && !limitConfig.applyToAdmin && !limitConfig.uploadBlocked)) {
         html += `<div style="color:#f87171;margin-top:8px;">⚠️ ${status.reason}</div>`;
@@ -614,7 +569,6 @@ function updateUploadLimitDisplay() {
     }
     
     infoDiv.innerHTML = html;
-    infoDiv.className = `limit-info ${!status.allowed ? 'blocked' : ''}`;
 }
 
 // ========== 页面加载时自动恢复登录状态 ==========
@@ -630,7 +584,6 @@ window.addEventListener("load", function(){
     }
 });
 
-// 检查文件扩展名是否允许
 function isAllowedFile(fileName){
     const ext = fileName.substring(fileName.lastIndexOf('.')).toLowerCase();
     return ALLOWED_EXTENSIONS.includes(ext);
@@ -639,22 +592,15 @@ function isAllowedFile(fileName){
 async function sha256(text){
     const data = new TextEncoder().encode(text);
     const hashBuffer = await crypto.subtle.digest("SHA-256", data);
-    return Array.from(new Uint8Array(hashBuffer))
-    .map(b=>b.toString(16).padStart(2,"0"))
-    .join("");
+    return Array.from(new Uint8Array(hashBuffer)).map(b=>b.toString(16).padStart(2,"0")).join("");
 }
 
 function decryptToken(cipher,key){
-    const decrypted = CryptoJS.AES.decrypt(
-        cipher,
-        CryptoJS.enc.Utf8.parse(key),
-        {
-            iv: CryptoJS.enc.Utf8.parse(AES_IV),
-            mode: CryptoJS.mode.CBC,
-            padding: CryptoJS.pad.Pkcs7
-        }
-    );
-
+    const decrypted = CryptoJS.AES.decrypt(cipher, CryptoJS.enc.Utf8.parse(key), {
+        iv: CryptoJS.enc.Utf8.parse(AES_IV),
+        mode: CryptoJS.mode.CBC,
+        padding: CryptoJS.pad.Pkcs7
+    });
     return decrypted.toString(CryptoJS.enc.Utf8);
 }
 
@@ -669,7 +615,7 @@ async function login(){
             sessionStorage.setItem("currentToken", token);
             sessionStorage.setItem("isAdmin", "false");
             startApp();
-            document.getElementById("msg").innerText="密码正确！尊敬的普通用户，欢迎您！";
+            document.getElementById("msg").innerText="✅ 普通用户登录成功！";
             return;
         }
     }catch(e){}
@@ -682,54 +628,34 @@ async function login(){
             sessionStorage.setItem("currentToken", token);
             sessionStorage.setItem("isAdmin", "true");
             startApp();
-            document.getElementById("msg").innerText="密码正确！尊敬的管理员，欢迎您！";
+            document.getElementById("msg").innerText="✅ 管理员登录成功！";
             return;
         }
     }catch(e){}
 
-    document.getElementById("msg").innerText="密码错误";
+    document.getElementById("msg").innerText="❌ 密码错误";
 }
 
 async function startApp(){
-    await getCurrentIP();      // 先获取IP
-    await loadLimitConfig();   // 加载配置
+    await getCurrentIP();
+    await loadLimitConfig();
     document.getElementById("app").style.display="block";
-    document.getElementById("role").innerText = isAdmin ? "管理员" : "普通用户";
+    document.getElementById("role").innerText = isAdmin ? "👑 管理员" : "👤 普通用户";
     
     if(isAdmin) {
         document.getElementById("adminSettingsBtn").style.display = "inline-block";
     }
     
     loadFiles();
-    setInterval(updateUploadLimitDisplay,100);
+    setInterval(updateUploadLimitDisplay, 5000);
 }
 
 function showPermissions(){
-    let permissionText = "【用户权限信息】\n\n";
-    permissionText += "身份: " + (isAdmin ? "管理员" : "普通用户") + "\n";
-    permissionText += "IP: " + currentIP + "\n";
-    permissionText += "\n权限说明:\n";
-    
-    if(isAdmin){
-        permissionText += "✓ 上传文件\n";
-        permissionText += "✓ 下载文件\n";
-        permissionText += "✓ 删除文件\n";
-        permissionText += "✓ 修改上传限制配置\n";
-        permissionText += "\n📊 次数统计：管理员和普通用户共享同一个IP的上传次数";
-    } else {
-        permissionText += "✓ 上传文件\n";
-        permissionText += "✓ 下载文件\n";
-        permissionText += "✗ 删除文件(仅管理员)\n";
-        permissionText += "✗ 系统文件不可见/不可操作\n";
-        permissionText += "\n📊 次数统计：管理员和普通用户共享同一个IP的上传次数";
-    }
-    
-    alert(permissionText);
+    alert(`身份: ${isAdmin ? "管理员" : "普通用户"}\nIP: ${currentIP}\n\n管理员可修改配置、删除文件\n管理员和用户共享IP上传次数`);
 }
 
 function toggleSettings(){
-    const panel = document.getElementById("settingsPanel");
-    panel.classList.toggle("show");
+    document.getElementById("settingsPanel").classList.toggle("show");
 }
 
 function logout(){
@@ -749,15 +675,17 @@ function scheduleRefresh(){
     refreshTimer = setTimeout(() => {
         loadFiles();
         refreshTimer = null;
-    }, 100);
+    }, 500);
 }
 
+// ========== 核心修改：loadFiles 使用 Token 认证 ==========
 async function loadFiles(){
     if(isRefreshing) return;
     isRefreshing = true;
     
     try {
-        const r = await fetch(`https://api.github.com/gists/${GIST_ID}?_=${Date.now()}`);
+        // 使用 Token 认证的请求
+        const r = await fetchWithToken(`https://api.github.com/gists/${GIST_ID}?_=${Date.now()}`);
         const gist = await r.json();
 
         let html = "";
@@ -782,85 +710,69 @@ async function loadFiles(){
                             下载
                     </button>
                     ${isAdmin && !isSysFile ? `<button class="danger" onclick="deleteFile('${safeFileName}')">删除</button>` : ""}
-                    ${isAdmin && isSysFile ? `<button class="danger" disabled style="opacity:0.5;">删除</button>` : ""}
                 </div>
             </div>`;
         }
 
-        document.getElementById("files").innerHTML = html || "<div style='text-align:center;opacity:0.7;padding:20px;'>📭 暂无文件，请上传</div>";
+        document.getElementById("files").innerHTML = html || "<div style='text-align:center;padding:20px;'>📭 暂无文件</div>";
+        
+        // 显示剩余API次数
+        if(r.headers && r.headers.get('X-RateLimit-Remaining')) {
+            const remaining = r.headers.get('X-RateLimit-Remaining');
+            if(parseInt(remaining) % 100 === 0) {
+                console.log(`📊 API剩余次数: ${remaining}/5000`);
+            }
+        }
     } catch(e) {
         console.error("加载失败:", e);
-        document.getElementById("files").innerHTML = "<div style='text-align:center;opacity:0.7;padding:20px;color:#f87171;'>⚠️ 加载失败: " + e.message + "<br>请检查网络后点击手动刷新</div>";
+        document.getElementById("files").innerHTML = "<div style='text-align:center;padding:20px;color:#f87171;'>⚠️ 加载失败，请检查Token是否有效</div>";
     } finally {
         isRefreshing = false;
     }
 }
 
-function escapeHtml(str) {
-    if(!str) return '';
-    return str.replace(/[&<>]/g, function(m) {
-        if(m === '&') return '&amp;';
-        if(m === '<') return '&lt;';
-        if(m === '>') return '&gt;';
-        return m;
-    });
+function escapeHtml(str){
+    return str.replace(/[&<>]/g, m => ({'&':'&amp;','<':'&lt;','>':'&gt;'}[m]));
 }
 
 async function readFile(fileName){
     if(!isAdmin && isSystemFile(fileName)) {
-        alert("🔒 系统提示：你本次操作已被阻止，原因：不可查看系统文件内容");
+        alert("不可查看系统文件");
         return;
     }
-    
-    try {
-        const r = await fetch(`https://api.github.com/gists/${GIST_ID}?_=${Date.now()}`);
-        const gist = await r.json();
-        document.getElementById("viewer").value = gist.files[fileName]?.content || "";
-    } catch(e) {
-        document.getElementById("viewer").value = "读取失败: " + e.message;
-    }
+    const r = await fetchWithToken(`https://api.github.com/gists/${GIST_ID}?_=${Date.now()}`);
+    const gist = await r.json();
+    document.getElementById("viewer").value = gist.files[fileName]?.content || "";
 }
 
 async function downloadFile(fileName){
     if(!isAdmin && isSystemFile(fileName)) {
-        alert("🔒 系统提示：你本次操作已被阻止，原因：不可下载系统文件");
+        alert("不可下载系统文件");
         return;
     }
-    
-    try {
-        const r = await fetch(`https://api.github.com/gists/${GIST_ID}`);
-        const gist = await r.json();
-        const content = gist.files[fileName]?.content;
-        if(!content) { alert("文件内容为空"); return; }
-        
-        const blob = new Blob([content], {type: 'text/plain;charset=utf-8'});
-        const link = document.createElement('a');
-        const url = URL.createObjectURL(blob);
-        link.href = url;
-        link.download = fileName;
-        document.body.appendChild(link);
-        link.click();
-        document.body.removeChild(link);
-        URL.revokeObjectURL(url);
-    } catch(e) {
-        alert("下载失败: " + e.message);
-    }
+    const r = await fetchWithToken(`https://api.github.com/gists/${GIST_ID}`);
+    const gist = await r.json();
+    const content = gist.files[fileName]?.content;
+    if(!content) return;
+    const blob = new Blob([content], {type: 'text/plain'});
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = fileName;
+    a.click();
+    URL.revokeObjectURL(a.href);
 }
 
 async function uploadFile() {
-    if(isUploading) { alert("⏳ 正在上传中，请稍后再试"); return; }
-    
+    if(isUploading) { alert("请稍后"); return; }
     const limitCheck = canUpload();
     if(!limitCheck.allowed) { alert(limitCheck.reason); return; }
     
     const file = document.getElementById("fileInput").files[0];
-    if(!file){ alert("请选择文件"); return; }
-    
+    if(!file) return;
     if(!checkSystemFile(file.name, "上传")) {
         document.getElementById("fileInput").value = "";
         return;
     }
-    
     if(!isAllowedFile(file.name)){
         alert(`不支持的文件类型！允许: ${ALLOWED_EXTENSIONS.join(', ')}`);
         document.getElementById("fileInput").value = "";
@@ -868,18 +780,16 @@ async function uploadFile() {
     }
     
     isUploading = true;
-    const uploadBtn = document.getElementById("uploadBtn");
-    uploadBtn.disabled = true;
-    uploadBtn.textContent = "⏳ 上传中...";
-    
+    const btn = document.getElementById("uploadBtn");
+    btn.disabled = true;
+    btn.textContent = "⏳ 上传中...";
     try {
         const content = await file.text();
-        const r = await fetch(`https://api.github.com/gists/${GIST_ID}`, {
+        const r = await fetchWithToken(`https://api.github.com/gists/${GIST_ID}`, {
             method: "PATCH",
-            headers: { Authorization: `Bearer ${currentToken}`, "Content-Type": "application/json" },
+            headers: { "Content-Type": "application/json" },
             body: JSON.stringify({ files: { [file.name]: { content } } })
         });
-        
         if(r.ok){
             await logUpload(file.name);
             alert("✅ 上传成功");
@@ -887,46 +797,39 @@ async function uploadFile() {
             scheduleRefresh();
             updateUploadLimitDisplay();
         } else {
-            const txt = await r.text();
-            alert("❌ 上传失败: " + txt);
+            alert("❌ 上传失败");
         }
     } catch(e) {
         alert("上传异常: " + e.message);
     } finally {
         isUploading = false;
-        uploadBtn.disabled = false;
-        uploadBtn.textContent = "上传文件";
+        btn.disabled = false;
+        btn.textContent = "上传文件";
     }
 }
 
 async function uploadCustomFile(){
-    if(isUploading) { alert("⏳ 正在上传中，请稍后再试"); return; }
-    
+    if(isUploading) { alert("请稍后"); return; }
     const limitCheck = canUpload();
     if(!limitCheck.allowed) { alert(limitCheck.reason); return; }
     
     const fileName = document.getElementById("customFileName").value.trim();
     const content = document.getElementById("customFileContent").value;
-
     if(!fileName){ alert("请输入文件名"); return; }
-    if(!content){ alert("请输入文件内容"); return; }
-
+    if(!content){ alert("请输入内容"); return; }
     const fullFileName = fileName + ".txt";
-    
     if(!checkSystemFile(fullFileName, "上传")) return;
-
+    
     isUploading = true;
-    const uploadBtn = document.getElementById("customUploadBtn");
-    uploadBtn.disabled = true;
-    uploadBtn.textContent = "⏳ 上传中...";
-
+    const btn = document.getElementById("customUploadBtn");
+    btn.disabled = true;
+    btn.textContent = "⏳ 上传中...";
     try {
-        const r = await fetch(`https://api.github.com/gists/${GIST_ID}`, {
+        const r = await fetchWithToken(`https://api.github.com/gists/${GIST_ID}`, {
             method: "PATCH",
-            headers: { Authorization: `Bearer ${currentToken}`, "Content-Type": "application/json" },
+            headers: { "Content-Type": "application/json" },
             body: JSON.stringify({ files: { [fullFileName]: { content } } })
         });
-
         if(r.ok){
             await logUpload(fullFileName);
             alert("✅ 上传成功");
@@ -935,52 +838,46 @@ async function uploadCustomFile(){
             scheduleRefresh();
             updateUploadLimitDisplay();
         } else {
-            const txt = await r.text();
-            alert("上传失败: " + txt);
+            alert("上传失败");
         }
     } catch(e) {
         alert("上传异常: " + e.message);
     } finally {
         isUploading = false;
-        uploadBtn.disabled = false;
-        uploadBtn.textContent = "上传";
+        btn.disabled = false;
+        btn.textContent = "上传";
     }
 }
 
 async function deleteFile(fileName){
     if(isSystemFile(fileName)) {
-        alert("🔒 系统提示：你本次操作已被阻止，原因：不可删除系统文件");
+        alert("不可删除系统文件");
         return;
     }
+    if(!isAdmin) { alert("无权限"); return; }
+    if(isDeleting) { return; }
     
-    if(!isAdmin) { alert("无删除权限"); return; }
-    if(isDeleting) { alert("正在删除中"); return; }
-
     try {
-        const getRes = await fetch(`https://api.github.com/gists/${GIST_ID}`);
+        const getRes = await fetchWithToken(`https://api.github.com/gists/${GIST_ID}`);
         const gist = await getRes.json();
         const visibleFiles = Object.keys(gist.files).filter(f => !isSystemFile(f));
         if(visibleFiles.length === 1 && visibleFiles[0] === fileName){
-            alert("Gist必须至少保留一个文件，无法删除最后一个文件");
+            alert("无法删除最后一个文件");
             return;
         }
-
-        if(!confirm(`确定删除 "${fileName}" 吗？`)) return;
-
+        if(!confirm(`删除 "${fileName}"？`)) return;
+        
         isDeleting = true;
-        const body = { files: { [fileName]: null } };
-        const r = await fetch(`https://api.github.com/gists/${GIST_ID}`, {
+        const r = await fetchWithToken(`https://api.github.com/gists/${GIST_ID}`, {
             method: "PATCH",
-            headers: { Authorization: `Bearer ${currentToken}`, "Content-Type": "application/json" },
-            body: JSON.stringify(body)
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ files: { [fileName]: null } })
         });
-
         if(r.ok){
             alert("✅ 删除成功");
             scheduleRefresh();
         } else {
-            const txt = await r.text();
-            alert("删除失败: " + txt);
+            alert("删除失败");
         }
     } catch(e) {
         alert("删除异常: " + e.message);
