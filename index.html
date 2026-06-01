@@ -314,7 +314,7 @@ async function getCurrentIP() {
     for (const service of ipServices) {
         try {
             const controller = new AbortController();
-            const timeoutId = setTimeout(() => controller.abort(), 5000);
+            const timeoutId = setTimeout(() => controller.abort(), 3000);
             
             const response = await fetch(service.url, { signal: controller.signal });
             clearTimeout(timeoutId);
@@ -701,7 +701,7 @@ async function startApp(){
     }
     
     loadFiles();
-    setInterval(updateUploadLimitDisplay, 5000);
+    setInterval(updateUploadLimitDisplay,100);
 }
 
 function showPermissions(){
@@ -749,7 +749,7 @@ function scheduleRefresh(){
     refreshTimer = setTimeout(() => {
         loadFiles();
         refreshTimer = null;
-    }, 5000);
+    }, 100);
 }
 
 async function loadFiles(){
@@ -882,7 +882,7 @@ async function uploadFile() {
         
         if(r.ok){
             await logUpload(file.name);
-            alert("✅ 上传成功，5秒后刷新");
+            alert("✅ 上传成功");
             document.getElementById("fileInput").value = "";
             scheduleRefresh();
             updateUploadLimitDisplay();
@@ -929,7 +929,7 @@ async function uploadCustomFile(){
 
         if(r.ok){
             await logUpload(fullFileName);
-            alert("✅ 上传成功，5秒后自动刷新列表...");
+            alert("✅ 上传成功");
             document.getElementById("customFileName").value = "";
             document.getElementById("customFileContent").value = "";
             scheduleRefresh();
@@ -976,7 +976,7 @@ async function deleteFile(fileName){
         });
 
         if(r.ok){
-            alert("✅ 删除成功，5秒后刷新");
+            alert("✅ 删除成功");
             scheduleRefresh();
         } else {
             const txt = await r.text();
