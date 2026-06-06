@@ -941,7 +941,7 @@ async function deleteFile(fileName){
     try {
         const getRes = await fetchWithToken(`https://api.github.com/gists/${GIST_ID}`);
         const gist = await getRes.json();
-        const visibleFiles = Object.keys(gist.files).filter(f => !isSystemFile(f));
+        const visibleFiles = Object.keys(gist.files);
         if(visibleFiles.length === 1 && visibleFiles[0] === fileName){
             alert("Gist必须至少保留一个文件，无法删除最后一个文件");
             return;
